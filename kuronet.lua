@@ -1,142 +1,353 @@
 --[[
-The MIT License (MIT)
+	The MIT License (MIT)
 
-Copyright (c) 2015 Guido Belluomo
+	Copyright (c) 2015 Guido Belluomo
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
+	Permission is hereby granted, free of charge, to any person obtaining a copy of
+	this software and associated documentation files (the "Software"), to deal in
+	the Software without restriction, including without limitation the rights to
+	use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+	the Software, and to permit persons to whom the Software is furnished to do so,
+	subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+	The above copyright notice and this permission notice shall be included in all
+	copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+	IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+	FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+	COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+	IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+	CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --]]
+
+-- EXAMPLES --
+--[[
+	if SERVER then
+		function SendString()
+			kNet.SendString("test_string", player.GetAll()[1], "Test")
+		end
+
+		kNet.ReceiveString("test_string", function(ply, length, str)
+			file.Write("receivedmessage.txt", str)
+		end)
+
+		function SendTable()
+			kNet.SendTable("test_table", nil, {1, 2, 3, 4, 5}) -- nil == net.Broadcast()
+		end
+
+		kNet.ReceiveTable("test_table", function(ply, length, tbl)
+			for k, v in pairs (tbl) do
+				print(v)
+			end
+		end)
+	else
+		concommand.Add("sendstring", function(ply)
+			kNet.SendString("test_string", "Test")
+		end)
+
+		concommand.Add("sendtable", function(ply)
+			kNet.SendTable("test_string", {1, 2, 3, 4, 5})
+		end)
+
+		kNet.ReceiveString("test_string", function(length, str)
+			file.Write("receivedmessage.txt", str)
+		end)
+
+		kNet.ReceiveTable("test_table", function(length, tbl)
+			for k, v in pairs (tbl) do
+				print(v)
+			end
+		end)
+	end
+--]]
+-- END EXAMPLES --
+
+function math.ClampMin(val, min)
+	return val > min and val or min
+end
+
+function table.iconcat(tbl, separator)
+	local str = ""
+	local filteredTbl = {}
+	for k, v in pairs(tbl) do
+		if (type(k) == "number") then
+			filteredTbl[k] = v
+		end
+	end
+
+	return table.concat(filteredTbl, separator)
+end
 
 local maxBytes = 2 ^ 16
 
-kuronet = {}
-kuronet.messages = {}
-kuronet.messages.strings = {}
-kuronet.messages.tables = {}
-kuronet.messages.strings.data = {}
-kuronet.messages.tables.data = {}
-kuronet.messages.strings.callbacks = {}
-kuronet.messages.tables.callbacks = {}
-kuronet.maxParts = 8
-kuronet.maxNameLength = 6
-kuronet.maxLength = maxBytes - (2 ^ kuronet.maxParts) * 2 - (2 ^ kuronet.maxNameLength) - 1 - 10
+kNet = {}
+kNet.messages = {}
+kNet.messages.strings = {}
+kNet.messages.tables = {}
+kNet.messages.strings.data = {}
+kNet.messages.tables.data = {}
+kNet.messages.strings.callbacks = {}
+kNet.messages.tables.callbacks = {}
+kNet.maxParts = 8
+kNet.maxNameLength = 6
+kNet.maxLength = maxBytes - math.ceil(math.ClampMin(kNet.maxParts / 8, 1)) * 2 - math.ceil(math.ClampMin(kNet.maxNameLength / 8, 1)) - 15 - 4 // - 15 is as a precaution, - 4 is for the 32bit uint of os.time()
 
-function kuronet.CheckName(name)
-	if #name > 2 ^ kuronet.maxNameLength then
+function kNet.CheckName(name)
+	if #name > 2 ^ kNet.maxNameLength then
 		ErrorNoHalt("Message: '"..name.."' has a too long name.")
 		return false
 	end
 	return true
 end
 
-function kuronet.ReceiveString(name, func)
-	if !kuronet.CheckName(name) then return end;
+function kNet.ReceiveString(name, func)
+	if !kNet.CheckName(name) then return end;
 
-	kuronet.messages.strings.data[name] = {}
-	kuronet.messages.strings.callbacks[name] = func
+	kNet.messages.strings.data[name] = {}
+	kNet.messages.strings.callbacks[name] = func
 end
 
-function kuronet.ReceiveTable(name, func)
-	if !kuronet.CheckName(name) then return end;
+function kNet.ReceiveTable(name, func)
+	if !kNet.CheckName(name) then return end;
 
-	kuronet.messages.tables.data[name] = {}
-	kuronet.messages.tables.callbacks[name] = func
+	kNet.messages.tables.data[name] = {}
+	kNet.messages.tables.callbacks[name] = func
 end
 
 if SERVER then
-	net.Receive("kuronet_string", function(ply, length)
+	kNet.timeOut = 45
+	kNet.cleanupInterval = 5
+	kNet.nextCleanup = CurTime() + kNet.cleanupInterval
+
+	function kNet.CleanupServer()
+		local stringDataTbl = kNet.messages.strings.data
+		local tablesDataTbl = kNet.messages.tables.data
+		local timeOut = kNet.timeOut
+		local time = os.time()
+
+		for k, v in pairs (stringDataTbl) do // v = Name Table
+			for k2, v2 in pairs (v) do // v2 = Player Table
+				for k3, v3 in pairs (v2) do // v3 = Timestamp Table
+					if !v3.completed and time >= v3.lastUpdate + timeOut then
+						v2[k3] = nil
+					end
+				end
+
+				if #v2 == 0 then
+					v[k2] = nil
+				end
+			end
+		end
+
+		for k, v in pairs (tablesDataTbl) do // v = Name Table
+			for k2, v2 in pairs (v) do // v2 = Player Table
+				for k3, v3 in pairs (v2) do // v3 = Timestamp Table
+					if !v3.completed and time >= v3.lastUpdate + timeOut then
+						v2[k3] = nil
+					end
+				end
+
+				if #v2 == 0 then
+					v[k2] = nil
+				end
+			end
+		end
+	end
+
+	hook.Add("Tick", "kNetCleanup", function()
+		local curTime = CurTime()
+		if curTime >= kNet.nextCleanup then
+			kNet.CleanupServer()
+			kNet.nextCleanup = curTime + kNet.cleanupInterval
+		end
+	end)
+end
+
+function kNet.DoStringCallbacks(name, length, ply)
+	if SERVER then
+		local baseTbl = kNet.messages.strings.data[name]
+		local tbl = baseTbl[ply]
+		local keys = table.SortByKey(tbl)
+		for k, v in pairs(keys) do
+			if tbl[v].complete then
+				kNet.messages.strings.callbacks[name](ply, length, table.iconcat(tbl[v], ""))
+				tbl[v] = nil
+			else
+				break
+			end
+		end
+
+		if #tbl == 0 then
+			tbl = nil
+		end
+	else
+		local tbl = kNet.messages.strings.data[name]
+		local keys = table.SortByKey(tbl)
+		for k, v in pairs(keys) do
+			if tbl[v].complete then
+				kNet.messages.strings.callbacks[name](length, table.iconcat(tbl[v], ""))
+				tbl[v] = nil
+			else
+				return
+			end
+		end
+	end
+end
+
+function kNet.DoTableCallbacks(name, length, ply)
+	if SERVER then
+		local baseTbl = kNet.messages.tables.data[name]
+		local tbl = baseTbl[ply]
+		local keys = table.SortByKey(tbl)
+		for k, v in pairs(keys) do
+			if tbl[v].complete then
+				kNet.messages.tables.callbacks[name](ply, length, pon.decode(table.iconcat(tbl[v], "")))
+				tbl[v] = nil
+			else
+				break
+			end
+		end
+
+		if #tbl == 0 then
+			tbl = nil
+		end
+	else
+		local tbl = kNet.messages.tables.data[name]
+		local keys = table.SortByKey(tbl)
+		for k, v in pairs(keys) do
+			if tbl[v].complete then
+				kNet.messages.tables.callbacks[name](length, pon.decode(table.iconcat(tbl[v], "")))
+				tbl[v] = nil
+			else
+				return
+			end
+		end
+	end
+end
+
+if SERVER then
+	net.Receive("kNet_string", function(length, ply)
+		local time = net.ReadUInt(32)
 		local name = net.ReadString()
 		local partIndex = net.ReadUInt(8)
 		local partText = net.ReadString()
+		local dataTbl = kNet.messages.strings.data[name]
 
-		kuronet.messages.strings.data[name][partIndex] = partText
+		if !dataTbl[ply] then
+			dataTbl[ply] = {}
+		end
 
-		local complete = net.ReadUInt(8) == #kuronet.messages.strings.data[name]
+		if !dataTbl[ply][time] then
+			dataTbl[ply][time] = {}
+		end
+
+		local dataTbl = dataTbl[ply]
+
+		dataTbl[time][partIndex] = partText
+
+		dataTbl[time].lastUpdate = os.time()
+
+		local complete = net.ReadUInt(8) == #dataTbl[time]
 
 		if complete then
-			kuronet.messages.strings.callbacks[name](ply, length, table.concat(kuronet.messages.strings.data[name], ""))
-			kuronet.messages.strings.data[name] = {}
+			dataTbl[time].complete = true
+			kNet.DoStringCallbacks(name, length, ply)
 		end
 	end)
 
-	net.Receive("kuronet_table", function(ply, length)
+	net.Receive("kNet_table", function(length, ply)
+		local time = net.ReadUInt(32)
 		local name = net.ReadString()
 		local partIndex = net.ReadUInt(8)
 		local partText = net.ReadString()
+		local dataTbl = kNet.messages.tables.data[name]
 
-		kuronet.messages.tables.data[name][partIndex] = partText
+		if !dataTbl[ply] then
+			dataTbl[ply] = {}
+		end
 
-		local complete = net.ReadUInt(8) == #kuronet.messages.tables.data[name]
+		if !dataTbl[ply][time] then
+			dataTbl[ply][time] = {}
+		end
+
+		dataTbl = dataTbl[ply]
+
+		dataTbl[time][partIndex] = partText
+
+		dataTbl[time].lastUpdate = os.time()
+
+		local complete = net.ReadUInt(8) == #dataTbl[time]
 
 		if complete then
-			kuronet.messages.tables.callbacks[name](ply, length, pon.decode(table.concat(kuronet.messages.tables.data[name], "")))
-			kuronet.messages.tables.data[name] = {}
+			dataTbl[time].complete = true
+			kNet.DoStringCallbacks(name, length, ply)
 		end
 	end)
 else
-	net.Receive("kuronet_string", function(length)
+	net.Receive("kNet_string", function(ply, length)
+		local time = net.ReadUInt(32)
 		local name = net.ReadString()
 		local partIndex = net.ReadUInt(8)
 		local partText = net.ReadString()
-		
-		kuronet.messages.strings.data[name][partIndex] = partText
+		local dataTbl = kNet.messages.strings.data[name]
 
-		local complete = net.ReadUInt(8) == #kuronet.messages.strings.data[name]
+		if !dataTbl[time] then
+			dataTbl[time] = {}
+		end
+
+		dataTbl[time][partIndex] = partText
+
+		local complete = net.ReadUInt(8) == #dataTbl[time]
 
 		if complete then
-			kuronet.messages.strings.callbacks[name](length, table.concat(kuronet.messages.strings.data[name], ""))
-			kuronet.messages.strings.data[name] = {}
+			dataTbl[time].complete = true
+			kNet.DoStringCallbacks(name, length)
 		end
 	end)
 
-	net.Receive("kuronet_table", function(length)
+	net.Receive("kNet_table", function(ply, length)
+		local time = net.ReadUInt(32)
 		local name = net.ReadString()
 		local partIndex = net.ReadUInt(8)
 		local partText = net.ReadString()
+		local dataTbl = kNet.messages.tables.data[name]
 
-		kuronet.messages.tables.data[name][partIndex] = partText
+		if !dataTbl[time] then
+			dataTbl[time] = {}
+		end
 
-		local complete = net.ReadUInt(8) == #kuronet.messages.tables.data[name]
+		dataTbl[time][partIndex] = partText
+
+		local complete = net.ReadUInt(8) == #dataTbl[time]
 
 		if complete then
-			kuronet.messages.tables.callbacks[name](length, pon.decode(table.concat(kuronet.messages.tables.data[name], "")))
-			kuronet.messages.tables.data[name] = {}
+			dataTbl[time].complete = true
+			kNet.DoStringCallbacks(name, length)
 		end
 	end)
 end
 
 if SERVER then
-	util.AddNetworkString("kuronet_string")
-	util.AddNetworkString("kuronet_table")
+	util.AddNetworkString("kNet_string")
+	util.AddNetworkString("kNet_table")
 
-	function kuronet.SendString(name, ply, str)
-		if !kuronet.CheckName(name) then return end;
+	function kNet.SendString(name, ply, str)
+		if !kNet.CheckName(name) then return end;
 
 		local part
-		local maxLength = kuronet.maxLength
+		local maxLength = kNet.maxLength
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
+		local time = os.time()
 
 		for i = 1, parts do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
 			end
-			net.Start("kuronet_string")
+			net.Start("kNet_string")
+				net.WriteUInt(time, 32)
 				net.WriteString(name)
 				net.WriteUInt(i, 8)
 				net.WriteString(part)
@@ -149,20 +360,22 @@ if SERVER then
 		end
 	end
 
-	function kuronet.SendStringOmit(ply, str)
-		if !kuronet.CheckName(name) then return end;
+	function kNet.SendStringOmit(ply, str)
+		if !kNet.CheckName(name) then return end;
 
 		local part
-		local maxLength = kuronet.maxLength
+		local maxLength = kNet.maxLength
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
+		local time = os.time()
 
 		for i = 1, parts do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
 			end
-			net.Start("kuronet_string")
+			net.Start("kNet_string")
+				net.WriteUInt(time, 32)
 				net.WriteString(name)
 				net.WriteUInt(i, 8)
 				net.WriteString(part)
@@ -171,21 +384,23 @@ if SERVER then
 		end
 	end
 
-	function kuronet.SendTable(ply, tbl)
-		if !kuronet.CheckName(name) then return end;
+	function kNet.SendTable(ply, tbl)
+		if !kNet.CheckName(name) then return end;
 
 		local part
-		local maxLength = kuronet.maxLength
+		local maxLength = kNet.maxLength
 		local str = pon.encode(tbl)
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
+		local time = os.time()
 
 		for i = 1, parts do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
 			end
-			net.Start("kuronet_table")
+			net.Start("kNet_table")
+				net.WriteUInt(time, 32)
 				net.WriteString(name)
 				net.WriteUInt(i, 8)
 				net.WriteString(part)
@@ -198,21 +413,23 @@ if SERVER then
 		end
 	end
 
-	function kuronet.SendTableOmit(ply, tbl)
-		if !kuronet.CheckName(name) then return end;
+	function kNet.SendTableOmit(ply, tbl)
+		if !kNet.CheckName(name) then return end;
 
 		local part
-		local maxLength = kuronet.maxLength
+		local maxLength = kNet.maxLength
 		local str = pon.encode(tbl)
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
+		local time = os.time()
 
 		for i = 1, parts do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
-		  if strLen > maxLength then
+			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
 			end
-			net.Start("kuronet_table")
+			net.Start("kNet_table")
+				net.WriteUInt(time, 32)
 				net.WriteString(name)
 				net.WriteUInt(i, 8)
 				net.WriteString(part)
@@ -221,20 +438,22 @@ if SERVER then
 		end
 	end
 else
-	function kuronet.SendString(str)
-		if !kuronet.CheckName(name) then return end;
+	function kNet.SendString(name, str)
+		if !kNet.CheckName(name) then return end;
 
 		local part
-		local maxLength = kuronet.maxLength
+		local maxLength = kNet.maxLength
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
+		local time = os.time()
 
 		for i = 1, parts do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
 			end
-			net.Start("kuronet_string")
+			net.Start("kNet_string")
+				net.WriteUInt(time, 32)
 				net.WriteString(name)
 				net.WriteUInt(i, 8)
 				net.WriteString(part)
@@ -243,21 +462,23 @@ else
 		end
 	end
 
-	function kuronet.SendTable(tbl)
-		if !kuronet.CheckName(name) then return end;
+	function kNet.SendTable(name, tbl)
+		if !kNet.CheckName(name) then return end;
 
 		local part
-		local maxLength = kuronet.maxLength
+		local maxLength = kNet.maxLength
 		local str = pon.encode(tbl)
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
+		local time = os.time()
 
 		for i = 1, parts do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
 			end
-			net.Start("kuronet_table")
+			net.Start("kNet_table")
+				net.WriteUInt(time, 32)
 				net.WriteString(name)
 				net.WriteUInt(i, 8)
 				net.WriteString(part)
