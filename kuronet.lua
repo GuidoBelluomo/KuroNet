@@ -29,7 +29,7 @@
 		end
 
 		kNet.ReceiveString("test_string", function(ply, length, str)
-			file.Write("receivedmessage.txt", str)
+			print(str)
 		end)
 
 		function SendTable()
@@ -47,11 +47,11 @@
 		end)
 
 		concommand.Add("sendtable", function(ply)
-			kNet.SendTable("test_string", {1, 2, 3, 4, 5})
+			kNet.SendTable("test_table", {1, 2, 3, 4, 5})
 		end)
 
 		kNet.ReceiveString("test_string", function(length, str)
-			file.Write("receivedmessage.txt", str)
+			print(str)
 		end)
 
 		kNet.ReceiveTable("test_table", function(length, tbl)
@@ -79,6 +79,11 @@ function table.iconcat(tbl, separator)
 	return table.concat(filteredTbl, separator)
 end
 
+function math.NeededBytes(num)
+	num = math.ClampMin(num, 1)
+	return math.ClampMin(math.ceil(math.log(num) / math.log(2) / 8), 1)
+end
+
 local maxBytes = 2 ^ 16
 
 kNet = {}
@@ -89,12 +94,16 @@ kNet.messages.strings.data = {}
 kNet.messages.tables.data = {}
 kNet.messages.strings.callbacks = {}
 kNet.messages.tables.callbacks = {}
-kNet.maxParts = 8
-kNet.maxNameLength = 6
-kNet.maxLength = maxBytes - math.ceil(math.ClampMin(kNet.maxParts / 8, 1)) * 2 - math.ceil(math.ClampMin(kNet.maxNameLength / 8, 1)) - 15 - 4 // - 15 is as a precaution, - 4 is for the 32bit uint of os.time()
+kNet.maxParts = 256
+kNet.maxNameLength = 64
+
+kNet.maxLength = maxBytes - (math.NeededBytes(kNet.maxParts - 1) * 2) - math.NeededBytes(kNet.maxNameLength) - 16 - 4 // - 16 is as a precaution, - 4 is for the 32bit uint of os.time()
+
+kNet.encode = util.TableToJSON
+kNet.decode = util.JSONToTable
 
 function kNet.CheckName(name)
-	if #name > 2 ^ kNet.maxNameLength then
+	if #name > kNet.maxNameLength then
 		ErrorNoHalt("Message: '"..name.."' has a too long name.")
 		return false
 	end
@@ -202,7 +211,7 @@ function kNet.DoTableCallbacks(name, length, ply)
 		local keys = table.SortByKey(tbl)
 		for k, v in pairs(keys) do
 			if tbl[v].complete then
-				kNet.messages.tables.callbacks[name](ply, length, pon.decode(table.iconcat(tbl[v], "")))
+				kNet.messages.tables.callbacks[name](ply, length, kNet.decode(table.iconcat(tbl[v], "")))
 				tbl[v] = nil
 			else
 				break
@@ -217,7 +226,7 @@ function kNet.DoTableCallbacks(name, length, ply)
 		local keys = table.SortByKey(tbl)
 		for k, v in pairs(keys) do
 			if tbl[v].complete then
-				kNet.messages.tables.callbacks[name](length, pon.decode(table.iconcat(tbl[v], "")))
+				kNet.messages.tables.callbacks[name](length, kNet.decode(table.iconcat(tbl[v], "")))
 				tbl[v] = nil
 			else
 				return
@@ -226,11 +235,12 @@ function kNet.DoTableCallbacks(name, length, ply)
 	end
 end
 
+// RECEIVE functions
 if SERVER then
 	net.Receive("kNet_string", function(length, ply)
 		local time = net.ReadUInt(32)
 		local name = net.ReadString()
-		local partIndex = net.ReadUInt(8)
+		local partIndex = net.ReadUInt(8) + 1
 		local partText = net.ReadString()
 		local dataTbl = kNet.messages.strings.data[name]
 
@@ -259,7 +269,7 @@ if SERVER then
 	net.Receive("kNet_table", function(length, ply)
 		local time = net.ReadUInt(32)
 		local name = net.ReadString()
-		local partIndex = net.ReadUInt(8)
+		local partIndex = net.ReadUInt(8) + 1
 		local partText = net.ReadString()
 		local dataTbl = kNet.messages.tables.data[name]
 
@@ -281,14 +291,14 @@ if SERVER then
 
 		if complete then
 			dataTbl[time].complete = true
-			kNet.DoStringCallbacks(name, length, ply)
+			kNet.DoTableCallbacks(name, length, ply)
 		end
 	end)
 else
 	net.Receive("kNet_string", function(ply, length)
 		local time = net.ReadUInt(32)
 		local name = net.ReadString()
-		local partIndex = net.ReadUInt(8)
+		local partIndex = net.ReadUInt(8) + 1
 		local partText = net.ReadString()
 		local dataTbl = kNet.messages.strings.data[name]
 
@@ -309,7 +319,7 @@ else
 	net.Receive("kNet_table", function(ply, length)
 		local time = net.ReadUInt(32)
 		local name = net.ReadString()
-		local partIndex = net.ReadUInt(8)
+		local partIndex = net.ReadUInt(8) + 1
 		local partText = net.ReadString()
 		local dataTbl = kNet.messages.tables.data[name]
 
@@ -323,11 +333,12 @@ else
 
 		if complete then
 			dataTbl[time].complete = true
-			kNet.DoStringCallbacks(name, length)
+			kNet.DoTableCallbacks(name, length)
 		end
 	end)
 end
 
+// SEND functions
 if SERVER then
 	util.AddNetworkString("kNet_string")
 	util.AddNetworkString("kNet_table")
@@ -341,7 +352,7 @@ if SERVER then
 		local parts = math.ceil(strLen / maxLength)
 		local time = os.time()
 
-		for i = 1, parts do
+		for i = 0, parts - 1 do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
@@ -360,7 +371,7 @@ if SERVER then
 		end
 	end
 
-	function kNet.SendStringOmit(ply, str)
+	function kNet.SendStringOmit(name, ply, str)
 		if !kNet.CheckName(name) then return end;
 
 		local part
@@ -369,7 +380,7 @@ if SERVER then
 		local parts = math.ceil(strLen / maxLength)
 		local time = os.time()
 
-		for i = 1, parts do
+		for i = 0, parts - 1 do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
@@ -384,17 +395,17 @@ if SERVER then
 		end
 	end
 
-	function kNet.SendTable(ply, tbl)
+	function kNet.SendTable(name, ply, tbl)
 		if !kNet.CheckName(name) then return end;
 
 		local part
 		local maxLength = kNet.maxLength
-		local str = pon.encode(tbl)
+		local str = kNet.encode(tbl)
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
 		local time = os.time()
 
-		for i = 1, parts do
+		for i = 0, parts - 1 do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
@@ -413,17 +424,17 @@ if SERVER then
 		end
 	end
 
-	function kNet.SendTableOmit(ply, tbl)
+	function kNet.SendTableOmit(name, ply, tbl)
 		if !kNet.CheckName(name) then return end;
 
 		local part
 		local maxLength = kNet.maxLength
-		local str = pon.encode(tbl)
+		local str = kNet.encode(tbl)
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
 		local time = os.time()
 
-		for i = 1, parts do
+		for i = 0, parts - 1 do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
@@ -447,7 +458,7 @@ else
 		local parts = math.ceil(strLen / maxLength)
 		local time = os.time()
 
-		for i = 1, parts do
+		for i = 0, parts - 1 do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
@@ -467,12 +478,12 @@ else
 
 		local part
 		local maxLength = kNet.maxLength
-		local str = pon.encode(tbl)
+		local str = kNet.encode(tbl)
 		local strLen = #str
 		local parts = math.ceil(strLen / maxLength)
 		local time = os.time()
 
-		for i = 1, parts do
+		for i = 0, parts - 1 do
 			part = string.sub(str, 1, math.Clamp(strLen, 1, maxLength))
 			if strLen > maxLength then
 				str = string.sub(str, maxLength + 1)
