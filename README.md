@@ -18,10 +18,10 @@ The max total amount of data (without accounting for "header" information of the
 Minor edits of the lua file allow to change things such as the max bytes of each chunk, the server timeout, etc. Table encoding functions can be changed too.
 
 ```lua
-kNet.encode = util.TableToJSON -- Table encoding function, replace with pON or glON if needed.
-kNet.decode = util.JSONToTable -- Table decoding function, replace with pON or glON if needed.
 local maxBytes = 2 ^ 16 -- Max bytes per data chunk, default to 64KB. Can be changed if GMod supports larger chunks, but at the time (11 years ago) this was the maximum allowed, pretty sure.
 kNet.maxParts = 256 -- Max number of chunks that can be sent over. Can be changed, but this reduces the amount of actual data sent over the chunk. Should always be a power of two to maximize data efficiency.
 kNet.maxNameLength = 64 -- Max length of the name key of the kNet request. Can be changed, but this reduces the amount of actual data sent over the chunk.
+kNet.encode = util.TableToJSON -- Table encoding function, replace with pON or glON if needed.
+kNet.decode = util.JSONToTable -- Table decoding function, replace with pON or glON if needed.
 ```
 
