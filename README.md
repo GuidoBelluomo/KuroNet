@@ -12,13 +12,13 @@ This uses an indexing system to make sure messages arrive in order, in case it m
 - More? Yeah, probably more.
 
 ## Limitations
-The max total amount of data (without accounting for "header" information of the chunk) that can be sent over in a single request is the value of the `maxBytes` variable * the `kNet.maxParts` variable, by default it's `64KB * 256`, meaning `16MB`
+The max total amount of data (without accounting for "header" information of the chunk) that can be sent over in a single request is the value of the `maxBytes` variable * the `kNet.maxParts` variable, by default it's `64KB * 256`, meaning `16MB`.
+The `maxBytes` value is not meant to be changed due to GMod limitations. This was (11 years ago) and still is the maximum allowed. Unless GMod increases the limit, this value should not be changed, [but feel free to check here for any changes.](https://wiki.facepunch.com/gmod/net)
 
 ## Configuration
 Minor edits of the lua file allow to change things such as the max bytes of each chunk, the server timeout, etc. Table encoding functions can be changed too.
 
 ```lua
-local maxBytes = 2 ^ 16 -- Max bytes per data chunk, default to 64KB. Can be changed if GMod supports larger chunks, but this was (11 years ago) and still is the maximum allowed. Feel free to check https://wiki.facepunch.com/gmod/net for any changes.
 kNet.maxParts = 256 -- Max number of chunks that can be sent over. Can be changed, but this reduces the amount of actual data sent over the chunk. Should always be a power of two to maximize data efficiency.
 kNet.maxNameLength = 64 -- Max length of the name key of the kNet request. Can be changed, but this reduces the amount of actual data sent over the chunk.
 kNet.encode = util.TableToJSON -- Table encoding function, replace with pON or glON if needed.
