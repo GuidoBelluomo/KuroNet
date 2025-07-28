@@ -1,6 +1,6 @@
 # KuroNet
 ## Introduction
-A Garry's Mod module that allows to send virtually infinitely long data (default limit is `16MB`, see more in the limitations section) by chunking it over the network, based on the original Garry's Mod net library. Functions for sending tables included, defaulting to the JSON functions that come with GMod. It's very easy to change this, and it's pretty straightforward.
+A Garry's Mod module that allows to send virtually infinitely long data (default limit is `16MB`, see more in the limitations section) by chunking it over the network, based on the original Garry's Mod net library. Functions for sending tables included, defaulting to encoding them using the JSON functions that come with GMod. It's very easy to change this, and it's pretty straightforward.
 
 Examples can be found at the beginning of the lua script.
 
